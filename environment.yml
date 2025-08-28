@@ -1,0 +1,21 @@
+name: FF
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+      - numpy==1.26.4
+      - torch==1.9.0
+      - torchvision==0.10.0
+      - mmcv==2.0.1
+      - mmengine==0.10.4
+      - mmselfsup==1.0.0
+      - pyqt5==5.15.11
+      - qimage2ndarray
+      - pandas
+      - h5py
+      - screeninfo
+      - requests
