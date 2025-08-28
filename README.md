@@ -1,0 +1,2 @@
+# TEDxAI_2025
+GUI for TEDxAI
