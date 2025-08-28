@@ -42,11 +42,12 @@ from src import randomly_place_cells, load_model
 
 from screeninfo import get_monitors
 
-WIDTH, HEIGHT = get_monitors()[0].width, get_monitors()[0].height
-if (WIDTH / HEIGHT) > 16/9:
-    print('resorting to 1920')
-    WIDTH = 1920
-    HEIGHT = 1056
+
+# WIDTH, HEIGHT = get_monitors()[0].width, get_monitors()[0].height
+# if (WIDTH / HEIGHT) > 16/9:
+#     print('resorting to 1920')
+#     WIDTH = 1920
+#     HEIGHT = 1056
 
 H5_PATH = BASEDIR.joinpath('data/dataset.h5')
 
@@ -205,12 +206,12 @@ class MainWindow(QMainWindow):
         # Right Layout
         rightVerticalLayout = QVBoxLayout(self.rightContainer)
 
-        # ⬇️ HBox for Image Size and Load Image Button
+        # HBox for Image Size and Load Image Button
         imageInputLayout = QHBoxLayout()
         self.image_size = QLineEdit(self)
         self.image_size.setMinimumSize(200, 50)
         self.image_size.setMaximumSize(250, 50)
-        self.image_size.setPlaceholderText("Bildgröße eingeben...")  # Hint text
+        self.image_size.setPlaceholderText("Image Size")
         imageInputLayout.addWidget(self.image_size)
 
         self.new_image_button = self.create_button("Mikroskopiebild laden", 200, 250, 50, Qt.AlignHCenter)
@@ -219,7 +220,7 @@ class MainWindow(QMainWindow):
         rightVerticalLayout.addItem(QSpacerItem(0, 150))
         rightVerticalLayout.addLayout(imageInputLayout)
 
-        # ⬇️ HBox for Start and Stop Buttons
+        # HBox for Start and Stop Buttons
         startStopLayout = QHBoxLayout()
         self.start = self.create_button("Suche beginnen...", 300, 400, 120, Qt.AlignHCenter)
         self.start.setMinimumSize(120, 80)  # Set minimum width and height
@@ -240,7 +241,7 @@ class MainWindow(QMainWindow):
         rightVerticalLayout.addLayout(startStopLayout)
         rightVerticalLayout.addLayout(showResults)
         
-        # 🔹 HBox for Summary Row (Initial Values)
+        # HBox for Summary Row (Initial Values)
         self.SummaryLayout = QVBoxLayout()
         self.SummaryLayout.setSpacing(10)  # Reduce spacing between labels (adjust as needed)
         self.SummaryLayout.setContentsMargins(0, 0, 0, 0)  # Minimize margins
@@ -265,7 +266,7 @@ class MainWindow(QMainWindow):
 
         self.SummaryLayout.addItem(QSpacerItem(80, 80, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        rightVerticalLayout.addLayout(self.SummaryLayout)  # ✅ Add Summary Row
+        rightVerticalLayout.addLayout(self.SummaryLayout)  
 
         self.rightContainer.setLayout(rightVerticalLayout)
 
@@ -341,7 +342,7 @@ class MainWindow(QMainWindow):
 
         self.model_timer = time()
     
-        ret = run_model(self.model, self.dataloader, n_samples=10_000)
+        ret = run_model(self.model, self.dataloader, n_samples=10000)
 
         # Convert embeddings to tensor
         X = torch.tensor(np.array(ret['embeddings'].tolist()).mean(axis=(2,3)))
