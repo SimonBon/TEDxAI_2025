@@ -85,7 +85,7 @@ if (WIDTH / HEIGHT) > 16/9:
 
 H5_PATH = BASEDIR.joinpath('small_data.h5')
 REAL_IMAGE_PATH = BASEDIR.joinpath('real_images')
-CELLPOSE_MODEL_PATH = BASEDIR.joinpath('CP_TU_MORE')
+CELLPOSE_MODEL_PATH = str(BASEDIR.joinpath('CP_TU_MORE'))
 MODEL_PATH = BASEDIR.joinpath('model_new.pth')
 CONFIG_PATH = BASEDIR.joinpath('config_new.py')
 
