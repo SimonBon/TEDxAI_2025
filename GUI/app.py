@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
         self.image_size.setMaximumSize(250, 35)
         self.image_size.setPlaceholderText("Synthetic Image Size...")
         self.synthetic_image.addWidget(self.image_size)
-        self.synthetic_image_button = self.create_button("Bild Generieren", 200, 250, 35, Qt.AlignHCenter)
+        self.synthetic_image_button = self.create_button("Generate Image", 200, 250, 35, Qt.AlignHCenter)
         self.synthetic_image.addWidget(self.synthetic_image_button)
 
 
@@ -262,15 +262,15 @@ class MainWindow(QMainWindow):
         self.image_path.setInsertPolicy(QComboBox.NoInsert)
         self.image_path.setPlaceholderText("Choose Image")
         self.real_image.addWidget(self.image_path)
-        self.real_image_button = self.create_button("Bild Laden", 200, 250, 35, Qt.AlignHCenter)
+        self.real_image_button = self.create_button("Load Image", 200, 250, 35, Qt.AlignHCenter)
         self.real_image.addWidget(self.real_image_button)
 
         startStopLayout = QHBoxLayout()
-        self.start = self.create_button("Suche beginnen...", 100, 250, 120, Qt.AlignHCenter)
+        self.start = self.create_button("Start Annotation", 100, 250, 120, Qt.AlignHCenter)
         self.start.setMinimumSize(120, 40)  # Set minimum width and height
         self.start.setFont(bold_font)
         self.start.setStyleSheet("background-color: green; color: white; border-radius: 10px; font-weight: bold;")
-        self.stop = self.create_button("Suche beenden...", 100, 250, 120, Qt.AlignHCenter)
+        self.stop = self.create_button("End Annotation", 100, 250, 120, Qt.AlignHCenter)
         self.stop.setMinimumSize(120, 40)  # Set minimum width and height
         self.stop.setFont(bold_font)
         self.stop.setStyleSheet("background-color: red; color: white; border-radius: 10px; font-weight: bold;")
@@ -308,18 +308,13 @@ class MainWindow(QMainWindow):
         slider_layout.addLayout(filter_layout)
         slider_layout.addWidget(self.filter_slider)
 
-        self.model_timer_label = QLabel("", self)
-        self.model_timer_label.setAlignment(Qt.AlignCenter)
-
-        self.user_timer_label = QLabel("", self)
-        self.user_timer_label.setAlignment(Qt.AlignCenter)
-
-        self.model_timer_label.setStyleSheet("font-size: 14pt;")
-        self.user_timer_label.setStyleSheet("font-size: 14pt;")
+        self.timer_text = ""
+        self.timer_label = QLabel(self.timer_text, self)
+        self.timer_label.setAlignment(Qt.AlignCenter)
+        self.timer_label.setStyleSheet("font-size: 14pt;")
 
         slider_layout.addItem(QSpacerItem(0, 20))
-        slider_layout.addWidget(self.user_timer_label)
-        slider_layout.addWidget(self.model_timer_label)
+        slider_layout.addWidget(self.timer_label)
 
         cell_image = QVBoxLayout(self.rightContainer)
         self.cell_image = ClickableLabel(self.rightContainer)
@@ -404,7 +399,7 @@ class MainWindow(QMainWindow):
             user=[0]*len(self.curr_coords)))
         
         self.curr_masks = resize_with_scipy(self.curr_masks, new_W, new_H)
-                
+ 
     def make_black_image(self):
         """ Generates a NumPy image and displays it in ClickableLabel """
     
@@ -473,7 +468,6 @@ class MainWindow(QMainWindow):
             user=[0]*len(self.curr_coords)))
         
         self.curr_masks = resize_with_scipy(self.curr_masks, new_W, new_H)
-
 
     def update_uncertainty_filter(self):
 
@@ -575,6 +569,8 @@ class MainWindow(QMainWindow):
         self.GT_CLICKED = self.USER_CLICKED = self.AI_CLICKED = False
         for widget in [self.gt_results, self.user_results, self.ai_results]:
             widget.setStyleSheet(STYLED[1])
+        self.timer_label.setText("")
+        self.ANNOTATED = False
 
 
     def update_filter_value(self, value):
@@ -594,14 +590,23 @@ class MainWindow(QMainWindow):
         self.user_clicked_dict['regression'] = results['regression']
         self.user_clicked_dict['uncertainty'] = results['uncertainty']
 
-        self.model_timer_label.setText(f"Model Prediction Time - {self.model_timer:.2f}s - {(self.model_timer/len(self.user_clicked_dict))*1000:.2f}ms per cell")
+        self.timer_label.setText(f"Model took {self.model_timer:.2f}s")
+
+        model_text = f"Model took {self.model_timer:.2f}s"
+
+        if self.timer_text:
+            self.timer_text += " / " + model_text
+        else: 
+            self.timer_text += model_text
+
+        self.timer_label.setText(self.timer_text)
 
         self.MODEL_RAN = True
 
 
     def start_timer(self):
     
-        if self.ANNOTATION_MODE:
+        if self.ANNOTATION_MODE or self.ANNOTATED:
             return 
         self.ANNOTATION_MODE = True
         
@@ -613,9 +618,18 @@ class MainWindow(QMainWindow):
         if not self.ANNOTATION_MODE:
             return
         self.ANNOTATION_MODE = False
+        self.ANNOTATED = True
 
         self.timer = time() - self.timer
-        self.user_timer_label.setText(f"User Time - {self.timer:.2f}s - {(self.timer/len(self.user_clicked_dict))*1000:.2f}ms per cell")
+
+        user_text = f"User took {self.timer:.2f}s"
+
+        if self.timer_text:
+            self.timer_text += " / " + user_text
+        else: 
+            self.timer_text += user_text
+
+        self.timer_label.setText(self.timer_text)
   
     def image_clicked(self, pos):
 

@@ -11,7 +11,9 @@ CP_TU_MORE
 *.pdf
 *.pth
 .DS_Store
-
+work_dirs/
+real_images/
+*.zip
 # Distribution / packaging
 .Python
 build/
