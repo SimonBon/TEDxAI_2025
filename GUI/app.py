@@ -60,7 +60,7 @@ STYLED = (STYLESHEET_CLICKED, STYLESHEET_NOT_CLICKED)
 
 register_all_modules()
 
-from CellPatchExtraction.CellPatchExtraction.src.extraction import segment_image, extract_and_pad_objects
+from CellPatchExtraction.src.extraction import segment_image, extract_and_pad_objects
 
 from PyQt5.QtGui import QFont
 
@@ -85,6 +85,9 @@ if (WIDTH / HEIGHT) > 16/9:
 
 H5_PATH = BASEDIR.joinpath('small_data.h5')
 REAL_IMAGE_PATH = BASEDIR.joinpath('real_images')
+CELLPOSE_MODEL_PATH = BASEDIR.joinpath('CP_TU_MORE')
+MODEL_PATH = BASEDIR.joinpath('model_new.pth')
+CONFIG_PATH = BASEDIR.joinpath('config_new.py')
 
 def resize_with_scipy(image, target_height, target_width):
     """Resize an image using scipy to a target height and width."""
@@ -175,7 +178,7 @@ class MainWindow(QMainWindow):
 
         model = models.CellposeModel(
             gpu=False, device=torch.device('mps'),
-            pretrained_model='/Users/simon.gutwein/src/TEDxAI_2025/CP_TU_MORE'
+            pretrained_model=CELLPOSE_MODEL_PATH
         )
 
         if torch.backends.mps.is_available():
@@ -190,9 +193,9 @@ class MainWindow(QMainWindow):
     
     def get_model(self):
 
-        cfg = Config.fromfile('/Users/simon.gutwein/src/TEDxAI_2025/config_new.py').to_dict()
+        cfg = Config.fromfile(CONFIG_PATH).to_dict()
         model = build_model_from_cfg(cfg['model'], MODELS)
-        checkpoint = torch.load('/Users/simon.gutwein/src/TEDxAI_2025/model_new.pth', map_location='cpu')
+        checkpoint = torch.load(MODEL_PATH, map_location='cpu')
         model.load_state_dict(checkpoint['state_dict'])
         model = model.eval().to('mps')
 
