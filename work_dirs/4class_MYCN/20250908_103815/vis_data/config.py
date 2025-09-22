@@ -74,11 +74,11 @@ param_scheduler = [
 randomness = dict(deterministic=False, seed=42)
 train_cfg = dict(max_epochs=20, type='EpochBasedTrainLoop', val_interval=1)
 train_dataloader = dict(
-    batch_size=16,
+    batch_size=256,
     collate_fn=dict(type='default_collate'),
     dataset=dict(
         h5_file=
-        '/Users/simon.gutwein/src/TEDxAI_2025/dataset.h5',
+        '/home/simon_g/isilon_images_mnt/10_MetaSystems/MetaSystemsData/_simon/src/FISH/MYCN.h5',
         mode='regression',
         pipeline=[
             dict(
@@ -165,7 +165,7 @@ train_dataloader = dict(
         ],
         type='PatchDataset'),
     drop_last=True,
-    num_workers=0,
+    num_workers=32,
     persistent_workers=False,
     sampler=dict(shuffle=True, type='DefaultSampler'))
 val_cfg = dict(type='ValLoop')

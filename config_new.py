@@ -23,7 +23,7 @@ model = dict(
         in_channels=128,
         loss=dict(
             label_smooth_val=0.01,
-            loss_weight=1,
+            loss_weight=0.5,
             mode='original',
             num_classes=4,
             reduction='mean',
@@ -35,7 +35,7 @@ model = dict(
         type='mmcls.StackedLinearClsHead'),
     head=dict(
         loss=dict(type='mmcls.CrossEntropyLoss'),
-        temperature=0.1,
+        temperature=0.2,
         type='ContrastiveHead'),
     neck=dict(
         hid_channels=64,
@@ -44,7 +44,7 @@ model = dict(
         out_channels=64,
         type='NonLinearNeck',
         with_avg_pool=False,
-        with_last_bn=True),
+        with_last_bn=False),
     reducer=dict(
         in_channels=512,
         out_channels=128,
@@ -52,7 +52,7 @@ model = dict(
         with_avg_pool=True),
     regressor=dict(
         in_channels=128,
-        loss=dict(loss_weight=1, reduction='mean', type='EuclideanLoss'),
+        loss=dict(loss_weight=2, reduction='mean', type='EuclideanLoss'),
         num_classes=1,
         type='mmcls.LinearClsHead'),
     type='SimCLRPlusClassifier')
@@ -64,28 +64,50 @@ optim_wrapper = dict(
 param_scheduler = [
     dict(begin=0, by_epoch=True, end=5, start_factor=0.01, type='LinearLR'),
     dict(
-        T_max=20,
+        T_max=40,
         begin=5,
         by_epoch=True,
-        end=20,
+        end=40,
         eta_min=1e-05,
         type='CosineAnnealingLR'),
 ]
 randomness = dict(deterministic=False, seed=42)
-train_cfg = dict(max_epochs=20, type='EpochBasedTrainLoop', val_interval=1)
+train_cfg = dict(max_epochs=40, type='EpochBasedTrainLoop', val_interval=1)
 train_dataloader = dict(
-    batch_size=16,
+    batch_size=256,
     collate_fn=dict(type='default_collate'),
     dataset=dict(
         h5_file=
-        '/Users/simon.gutwein/src/TEDxAI_2025/dataset.h5',
+        '/home/simon_g/isilon_images_mnt/10_MetaSystems/MetaSystemsData/_simon/src/FISH/MYCN.h5',
         mode='regression',
         pipeline=[
             dict(
                 num_views=[
-                    2,
+                    1,
+                    1,
                 ],
                 transforms=[
+                    [
+                        dict(
+                            p_horizontal=0.5,
+                            p_vertical=0.5,
+                            type='C_RandomFlip'),
+                        dict(
+                            angle=(
+                                0,
+                                360,
+                            ),
+                            order=1,
+                            scale=(
+                                0.8,
+                                1.25,
+                            ),
+                            shift=(
+                                0,
+                                0,
+                            ),
+                            type='C_RandomAffine'),
+                    ],
                     [
                         dict(
                             p_horizontal=0.5,
@@ -102,15 +124,15 @@ train_dataloader = dict(
                                 1.5,
                             ),
                             shift=(
-                                -0.1,
-                                0.1,
+                                0,
+                                0,
                             ),
                             type='C_RandomAffine'),
                         dict(
                             high=(
-                                3,
-                                3,
-                                3,
+                                2,
+                                2,
+                                2,
                             ),
                             low=(
                                 0.5,
@@ -132,17 +154,19 @@ train_dataloader = dict(
                         dict(
                             blurr=(
                                 0.0,
-                                1,
-                            ), clip=True, type='C_RandomBlurr'),
+                                0.7,
+                            ),
+                            clip=True,
+                            type='C_RandomBlurr'),
                         dict(
                             clip=True,
                             mean=(
-                                -0.15,
-                                0.15,
+                                0,
+                                0,
                             ),
                             std=(
                                 0.0,
-                                0.12,
+                                0.07,
                             ),
                             type='C_RandomNoise'),
                     ],
@@ -165,8 +189,8 @@ train_dataloader = dict(
         ],
         type='PatchDataset'),
     drop_last=True,
-    num_workers=0,
-    persistent_workers=False,
+    num_workers=32,
+    persistent_workers=True,
     sampler=dict(shuffle=True, type='DefaultSampler'))
 val_cfg = dict(type='ValLoop')
 val_dataloader = dict(
@@ -193,8 +217,8 @@ val_dataloader = dict(
         ],
         type='PatchDataset'),
     drop_last=True,
-    num_workers=32,
-    persistent_workers=False,
+    num_workers=8,
+    persistent_workers=True,
     sampler=dict(shuffle=False, type='DefaultSampler'))
 val_evaluator = dict(topk=(1, ), type='mmcls.Accuracy')
 work_dir = './work_dirs/4class_MYCN'

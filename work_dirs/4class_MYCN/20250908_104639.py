@@ -77,8 +77,7 @@ train_dataloader = dict(
     batch_size=16,
     collate_fn=dict(type='default_collate'),
     dataset=dict(
-        h5_file=
-        '/Users/simon.gutwein/src/TEDxAI_2025/dataset.h5',
+        h5_file='/Users/simon.gutwein/src/TEDxAI_2025/dataset.h5',
         mode='regression',
         pipeline=[
             dict(

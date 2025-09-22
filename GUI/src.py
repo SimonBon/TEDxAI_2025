@@ -29,7 +29,10 @@ def randomly_place_cells(out_size, rgb_images, mask_images, targets, n_images, m
     hpsz = rgb_images.shape[1] // 2  
     out_image = np.zeros([*np.array(out_size) + 2*hpsz, 3])
     mask_image = np.zeros([*np.array(out_size) + 2*hpsz])
-    
+    ret_mask_image = np.zeros([*np.array(out_size) + 2*hpsz])
+
+    all_placed_cells = []
+
     rejection_count = 0  # Counter for consecutive rejections
     placed_cells = 0
     placed_idxs, placed_pos, placed_targets = [], [], []
@@ -37,7 +40,7 @@ def randomly_place_cells(out_size, rgb_images, mask_images, targets, n_images, m
     while placed_cells < n_images:
         # Randomly select a cell and calculate its diameter
         if rejection_count == max_rejections:
-            print(f'reached max rejections after {placed_cells} cells')
+            print(f'reached max rejections ({max_rejections}) after {placed_cells} cells')
             break
         
         cell_index = np.random.choice(len(rgb_images))
@@ -45,7 +48,7 @@ def randomly_place_cells(out_size, rgb_images, mask_images, targets, n_images, m
         # Generate a random position
         try_pos = [np.random.randint(hpsz, out_size[0] + hpsz), np.random.randint(hpsz, out_size[1] + hpsz)]
         
-        if mask_image[try_pos[0], try_pos[1]] == 1:
+        if mask_image[try_pos[0], try_pos[1]] > 0.:
             rejection_count += 1 
             continue
 
@@ -57,17 +60,21 @@ def randomly_place_cells(out_size, rgb_images, mask_images, targets, n_images, m
             rejection_count += 1 
             continue
         
+        placed_cells += 1
+
+        ret_mask_image = ret_mask_image + (tmp * placed_cells)
         mask_image = mask_image + tmp
-        
+
+        cell_img = np.rot90(rgb_images[cell_index], k=rot)
         out_image[
             try_pos[0]-hpsz:try_pos[0]+hpsz,
             try_pos[1]-hpsz:try_pos[1]+hpsz
-        ] += np.rot90(rgb_images[cell_index], k=rot)
+        ] += cell_img
 
-        placed_cells += 1
+        all_placed_cells.append(cell_img)
         
         placed_idxs.append(cell_index)
-        placed_pos.append([try_pos[0]-hpsz, try_pos[1]-hpsz])
+        placed_pos.append([try_pos[1]-hpsz, try_pos[0]-hpsz])
         placed_targets.append(targets[cell_index])
 
-    return np.clip(out_image[hpsz:-hpsz, hpsz:-hpsz], 0, 1), mask_image[hpsz:-hpsz, hpsz:-hpsz], placed_idxs, placed_pos, placed_targets
+    return np.clip(out_image[hpsz:-hpsz, hpsz:-hpsz], 0, 1), ret_mask_image[hpsz:-hpsz, hpsz:-hpsz].astype(np.uint16), placed_idxs, placed_pos, placed_targets, all_placed_cells
