@@ -574,6 +574,7 @@ class MainWindow(QMainWindow):
             widget.setStyleSheet(STYLED[1])
         self.timer_label.setText("")
         self.ANNOTATED = False
+        self.timer_text = ""
 
 
     def update_filter_value(self, value):
@@ -592,8 +593,6 @@ class MainWindow(QMainWindow):
         self.user_clicked_dict['ai'] = [CLASS_MAP[c] for c in results['classification']]
         self.user_clicked_dict['regression'] = results['regression']
         self.user_clicked_dict['uncertainty'] = results['uncertainty']
-
-        self.timer_label.setText(f"Model took {self.model_timer:.2f}s")
 
         model_text = f"Model took {self.model_timer:.2f}s"
 
