@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
         self.image_path.setMinimumSize(250, 35)
         self.image_path.setMaximumSize(250, 35)
 
-        image_files = list(REAL_IMAGE_PATH.glob('*'))
+        image_files = [f for f in list(REAL_IMAGE_PATH.glob('*')) if 'tif' in str(f).lower()]
         self.image_files = {path.stem: path for path in image_files}
 
         self.image_path.addItems(list(self.image_files.keys()))
@@ -553,7 +553,7 @@ class MainWindow(QMainWindow):
         elif self.USER_CLICKED:
             self.drawRectanglesAndText(mode='user')
         elif self.AI_CLICKED:
-            self.drawRectanglesAndText(mode='ai')
+            self.drawRectanglesAndText(mode='ai', uncertainty=self.filter_slider.value()/100)
 
     def plot_comparison(self):
 
@@ -663,6 +663,7 @@ class MainWindow(QMainWindow):
 
     def drawRectanglesAndText(self, mode, uncertainty=None, comp1=None, comp2=None):
 
+
         _user_clicked_dict = self.user_clicked_dict.copy()  # rename to df if it’s really a DataFrame
         
         if uncertainty is not None:
@@ -738,9 +739,6 @@ class MainWindow(QMainWindow):
                     class_text = colors_dict[row.ai]['class']
 
                 elif mode == 'ground_truth':
-                    print(row.ground_truth)
-                    print(colors_dict[row.ground_truth])
-                    print(colors_dict[row.ground_truth]['color'])
                     color = colors_dict[row.ground_truth]['color']
                     class_text = colors_dict[row.ground_truth]['class']
 
