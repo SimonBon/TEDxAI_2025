@@ -1,8 +1,8 @@
-# Forschungsfest-2025
+# TEDxAI-2025
 
 ![Capture-2025-03-18-133202](https://github.com/user-attachments/assets/722aee17-21c0-45a5-8f01-8283f4b0b69e)
 
-This repository is part of the **St. Anna Children's Cancer Research Institute's** contribution to the [Vienna Forschungsfest 2025](https://wirtschaftsagentur.at/termine-events-workshops/wiener-forschungsfest-2025/).  
+This repository is part of the **St. Anna Children's Cancer Research Institute's** contribution to the [TEDxAI](https://tedai-vienna.ted.com).  
 
 It features an **interactive game** that simulates the process of detecting **genetic aberrations in microscopic images**, a critical task in medical diagnostics. The game highlights the challenges of **manual image evaluation**, emphasizing that human analysis is **time-consuming and error-prone**. It also demonstrates how **AI can significantly improve this process**, offering **faster and more reliable** results in many scenarios.  
 
@@ -21,15 +21,15 @@ It features an **interactive game** that simulates the process of detecting **ge
 
 2. **Clone the required repositories:**
    ```bash
-   git clone https://github.com/SimonBon/Forschungsfest-2025
+   git clone https://github.com/SimonBon/TEDxAI_2025
    git clone https://github.com/SimonBon/DiagnosticFISH_package
    ```
 
-3. **Navigate to the `Forschungsfest-2025` folder, create a Conda environment, and activate it:**
+3. **Navigate to the `TEDxAI_2025` folder, create a Conda environment, and activate it:**
    If you do not have conda installed, please refer to the anaconda webpage to install it.
    
    ```bash
-   cd Forschungsfest-2025
+   cd TEDxAI_2025
    conda env create -f environment.yml
    conda activate FF
    ```
