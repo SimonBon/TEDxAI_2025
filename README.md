@@ -1,5 +1,7 @@
 # TEDxAI-2025
 
+![](GUI.png)
+
 This repository is part of the **St. Anna Children's Cancer Research Institute's** contribution to the [TEDxAI](https://tedai-vienna.ted.com).  
 
 It features an **interactive game** that simulates the process of detecting **genetic aberrations in microscopic images**, a critical task in medical diagnostics. The game highlights the challenges of **manual image evaluation**, emphasizing that human analysis is **time-consuming and error-prone**. It also demonstrates how **AI can significantly improve this process**, offering **faster and more reliable** results in many scenarios.  
