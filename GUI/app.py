@@ -17,9 +17,9 @@ from scipy.spatial.distance import cdist
 from cellpose import models, io
 #from einops import rearrange
 from PyQt5 import QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QRect, pyqtSignal, QPoint, QPointF, QThread
+from PyQt5.QtCore import Qt, QRect, pyqtSignal, QPoint, QPointF, QThread, QTimer
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QImage
-from PyQt5.QtWidgets import QApplication, QMainWindow, QSlider, QCheckBox, QComboBox, QSpacerItem, QSizePolicy, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QTableWidget, QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QMainWindow, QSlider, QCheckBox, QComboBox, QSpacerItem, QSizePolicy, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QTableWidget, QTableWidgetItem, QProgressBar
 from PyQt5.uic import loadUi  # Import to load .ui files
 from PyQt5.QtWidgets import QApplication
 import sys
@@ -57,6 +57,27 @@ STYLESHEET_NOT_CLICKED = """QPushButton {
 
 MAX_ON = 2
 STYLED = (STYLESHEET_CLICKED, STYLESHEET_NOT_CLICKED)
+
+HELP_UNCERTAINTY_THRESHOLD = 0.4  # uncertainty > this = AI wants a second opinion
+
+HELP_STYLESHEET_OFF = """QPushButton {
+                background-color: #3a1f1f;
+                color: #ff8080;
+                border: 2px dashed #ff5050;
+                padding: 5px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #552727; }"""
+
+HELP_STYLESHEET_ON = """QPushButton {
+                background-color: #cc3030;
+                color: white;
+                border: 2px solid #ff8080;
+                padding: 5px;
+                border-radius: 5px;
+                font-weight: bold;
+            }"""
 
 
 def pick_device():
@@ -108,6 +129,10 @@ class InferenceWorker(QThread):
 
     finished_ok = pyqtSignal(dict, float)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int, int)  # done, total
+
+    CHUNK_SIZE = 8
+    MIN_CHUNK_DELAY = 0.05  # seconds; ensures the progress bar is visible even on fast GPUs
 
     def __init__(self, model, patches, parent=None):
         super().__init__(parent)
@@ -118,8 +143,27 @@ class InferenceWorker(QThread):
         try:
             t0 = time()
             tensor = torch.tensor(self.patches.astype(np.float32).transpose(0, 3, 1, 2))
+            total = tensor.shape[0]
+            self.progress.emit(0, total)
+
+            chunks = {'classification': [], 'regression': [], 'uncertainty': []}
+
+            done = 0
             with torch.no_grad():
-                results = self.model.predict([tensor], return_uncertainty=True)
+                for start in range(0, total, self.CHUNK_SIZE):
+                    chunk_start = time()
+                    end = min(start + self.CHUNK_SIZE, total)
+                    sub = tensor[start:end]
+                    r = self.model.predict([sub], return_uncertainty=True)
+                    for k in chunks:
+                        chunks[k].append(np.asarray(r[k]))
+                    done = end
+                    self.progress.emit(done, total)
+                    elapsed = time() - chunk_start
+                    if elapsed < self.MIN_CHUNK_DELAY:
+                        self.msleep(int((self.MIN_CHUNK_DELAY - elapsed) * 1000))
+
+            results = {k: np.concatenate(v, axis=0) for k, v in chunks.items()}
             self.finished_ok.emit(results, time() - t0)
         except Exception as e:
             self.failed.emit(repr(e))
@@ -182,11 +226,27 @@ class MainWindow(QMainWindow):
         self.GT_CLICKED = False
         self.AI_CLICKED = False
         self.USER_CLICKED = False
+        self.HELP_CLICKED = False
 
         self._inference_worker = None
         self._inference_running = False
         self._ai_toggle_pending = False
+        self._help_toggle_pending = False
         self._inference_patches_id = None
+
+        self._ai_reveal_timer = QTimer(self)
+        self._ai_reveal_timer.setInterval(30)
+        self._ai_reveal_timer.timeout.connect(self._ai_reveal_tick)
+        self._ai_revealed_order = None
+        self._ai_revealed_count = 0
+        self._ai_revealed_total = 0
+        self._ai_animation_active = False
+
+        self._score_timer = QTimer(self)
+        self._score_timer.setInterval(25)
+        self._score_timer.timeout.connect(self._score_tick)
+        self._score_target = None  # (tag, matches, total, current_step)
+        self._score_steps_total = 30
         
         self.setStyleSheet("""
             QWidget {
@@ -321,25 +381,14 @@ class MainWindow(QMainWindow):
         showResults.addWidget(self.user_results)
         showResults.addWidget(self.gt_results)
 
-        filter_layout = QHBoxLayout()
-        self.filter_label = QLabel("Filter: 0.0", self)
-        self.filter_label.setAlignment(Qt.AlignCenter)
-        self.filter_toggle = QCheckBox("Filter Low")
-
-        filter_layout.addWidget(self.filter_label)
-        filter_layout.addWidget(self.filter_toggle)
-
-        self.filter_slider = QSlider(Qt.Horizontal, self)
-        self.filter_slider.setRange(0, 100)
-        self.filter_slider.setValue(100)
-        self.filter_slider.setTickPosition(QSlider.TicksBelow)
-        self.filter_slider.setTickInterval(10)
-        self.filter_slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        helpLayout = QHBoxLayout()
+        self.help_results = self.create_button("AI NEEDS HELP (low-confidence cells)", 35, 800, 40, Qt.AlignHCenter)
+        self.help_results.setMinimumSize(200, 40)
+        self.help_results.setStyleSheet(HELP_STYLESHEET_OFF)
+        helpLayout.addWidget(self.help_results)
 
         slider_layout = QVBoxLayout()
         slider_layout.addItem(QSpacerItem(0, 20))
-        slider_layout.addLayout(filter_layout)
-        slider_layout.addWidget(self.filter_slider)
 
         self.timer_text = ""
         self.timer_label = QLabel(self.timer_text, self)
@@ -350,8 +399,32 @@ class MainWindow(QMainWindow):
         self.score_label.setAlignment(Qt.AlignCenter)
         self.score_label.setStyleSheet("font-size: 18pt; font-weight: bold; color: #7CFC00;")
 
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("Classifying cell %v / %m")
+        self.progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #888;
+                border-radius: 6px;
+                background-color: #222;
+                color: white;
+                text-align: center;
+                font-size: 12pt;
+                min-height: 28px;
+            }
+            QProgressBar::chunk {
+                background-color: #00B4FF;
+                border-radius: 5px;
+            }
+            """
+        )
+        self.progress_bar.setVisible(False)
+
         slider_layout.addItem(QSpacerItem(0, 20))
         slider_layout.addWidget(self.timer_label)
+        slider_layout.addWidget(self.progress_bar)
         slider_layout.addWidget(self.score_label)
 
         cell_image = QVBoxLayout(self.rightContainer)
@@ -366,6 +439,7 @@ class MainWindow(QMainWindow):
         rightVerticalLayout.addLayout(self.real_image)
         rightVerticalLayout.addLayout(startStopLayout)
         rightVerticalLayout.addLayout(showResults)
+        rightVerticalLayout.addLayout(helpLayout)
         rightVerticalLayout.addLayout(slider_layout)
 
         self.make_black_image()
@@ -432,13 +506,14 @@ class MainWindow(QMainWindow):
         self.curr_coords = np.array(self.curr_coords) * scale
 
         self.user_clicked_dict = pd.DataFrame(dict(
-            patches=list(self.curr_patches), 
-            coords=list(self.curr_coords), 
+            patches=list(self.curr_patches),
+            coords=list(self.curr_coords),
             ground_truth=[CLASS_MAP[c] for c in self.curr_targets],
-            user=[0]*len(self.curr_coords)))
-        
+            user=[0]*len(self.curr_coords),
+            user_touched=[False]*len(self.curr_coords)))
+
         self.curr_masks = resize_with_scipy(self.curr_masks, new_W, new_H)
- 
+
     LEGEND_ENTRIES = [
         ((64, 64, 64), "NORMAL"),
         ((255, 255, 0), "LOSS"),
@@ -535,21 +610,12 @@ class MainWindow(QMainWindow):
         self.curr_coords = np.array(self.curr_coords) * scale
 
         self.user_clicked_dict = pd.DataFrame(dict(
-            patches=list(self.curr_patches), 
-            coords=list(self.curr_coords), 
-            user=[0]*len(self.curr_coords)))
+            patches=list(self.curr_patches),
+            coords=list(self.curr_coords),
+            user=[0]*len(self.curr_coords),
+            user_touched=[False]*len(self.curr_coords)))
         
         self.curr_masks = resize_with_scipy(self.curr_masks, new_W, new_H)
-
-    def update_uncertainty_filter(self):
-
-        slider_value = self.filter_slider.value() / 100
-
-        if not self.AI_CLICKED or not self.MODEL_RAN: 
-            return
-        
-        self.drawRectanglesAndText(mode='ai', uncertainty=slider_value)
-
 
     def connect_signals(self):
 
@@ -558,13 +624,10 @@ class MainWindow(QMainWindow):
         self.start.clicked.connect(self.start_timer)
         self.stop.clicked.connect(self.stop_timer)
         self.real_image_button.clicked.connect(self.load_image)
-        self.filter_slider.valueChanged.connect(self.update_filter_value)
-        self.filter_slider.sliderReleased.connect(self.update_uncertainty_filter)
-        self.filter_toggle.toggled.connect(self.update_uncertainty_filter)
         self.gt_results.clicked.connect(self.gt_clicked)
         self.ai_results.clicked.connect(self.ai_clicked)
         self.user_results.clicked.connect(self.user_clicked)
-        self.update_filter_value(100)
+        self.help_results.clicked.connect(self.help_clicked)
 
     def _count_on(self):
         return int(self.GT_CLICKED) + int(self.AI_CLICKED) + int(self.USER_CLICKED)
@@ -574,6 +637,10 @@ class MainWindow(QMainWindow):
         # allow turning off always; block turning on if already 2 on
         if not cur and self._count_on() >= MAX_ON:
             return  # ignore this click
+
+        if not cur and self.HELP_CLICKED:
+            self.HELP_CLICKED = False
+            self.help_results.setStyleSheet(HELP_STYLESHEET_OFF)
 
         new = not cur
         setattr(self, attr_name, new)
@@ -591,6 +658,8 @@ class MainWindow(QMainWindow):
         if not self.MODEL_RAN:
             if self.curr_patches is None or len(self.curr_patches) == 0:
                 return
+            self._ai_toggle_pending = True
+            self._help_toggle_pending = False
             self._start_inference()
             return
 
@@ -599,11 +668,51 @@ class MainWindow(QMainWindow):
     def user_clicked(self):
         self._try_toggle("USER_CLICKED", self.user_results)
 
+    def help_clicked(self):
+
+        if self._inference_running:
+            return
+
+        if not self.MODEL_RAN:
+            if self.curr_patches is None or len(self.curr_patches) == 0:
+                return
+            self._help_toggle_pending = True
+            self._ai_toggle_pending = False
+            self._start_inference()
+            return
+
+        self._toggle_help()
+
+    def _toggle_help(self):
+        if not self.HELP_CLICKED:
+            for attr, widget in (("GT_CLICKED", self.gt_results),
+                                 ("AI_CLICKED", self.ai_results),
+                                 ("USER_CLICKED", self.user_results)):
+                if getattr(self, attr):
+                    setattr(self, attr, False)
+                    widget.setStyleSheet(STYLED[1])
+            self.HELP_CLICKED = True
+            self.help_results.setStyleSheet(HELP_STYLESHEET_ON)
+        else:
+            self.HELP_CLICKED = False
+            self.help_results.setStyleSheet(HELP_STYLESHEET_OFF)
+
+        self.switch_show()
+
     def switch_show(self):
+
+        if self.HELP_CLICKED:
+            self._score_timer.stop()
+            self._score_target = None
+            self.score_label.setText("")
+            self.plot_help()
+            return
 
         n_toggled = (self.GT_CLICKED + self.AI_CLICKED + self.USER_CLICKED)
 
         if n_toggled != 2:
+            self._score_timer.stop()
+            self._score_target = None
             self.score_label.setText("")
 
         if n_toggled == 0:
@@ -616,6 +725,53 @@ class MainWindow(QMainWindow):
             self.plot_comparison()
         else:
             print('SHOULD NEVER HAPPEN')
+
+    def plot_help(self):
+        self.drawRectanglesAndText(mode='help')
+
+    def _update_help_score(self):
+
+        df = self.user_clicked_dict
+        if df is None or 'uncertainty' not in df.columns or 'ai' not in df.columns:
+            self.score_label.setText("")
+            return
+
+        touched = df['user_touched'] if 'user_touched' in df.columns else pd.Series(False, index=df.index)
+        uncertain_mask = df['uncertainty'] > HELP_UNCERTAINTY_THRESHOLD
+        touched_unc = int((touched & uncertain_mask).sum())
+        n_unc = int(uncertain_mask.sum())
+
+        if self.GT_AVAILABLE and 'ground_truth' in df.columns:
+            ai_correct = (df['ai'] == df['ground_truth']).sum()
+            # Hybrid: override AI with user's label on user-touched uncertain cells
+            hybrid_pred = df['ai'].where(~(touched & uncertain_mask), df['user'])
+            hybrid_correct = (hybrid_pred == df['ground_truth']).sum()
+            n = len(df)
+
+            ai_pct = 100 * ai_correct / n if n else 0
+            hy_pct = 100 * hybrid_correct / n if n else 0
+            delta = hy_pct - ai_pct
+            sign = "+" if delta >= 0 else ""
+            color = "#7CFC00" if delta >= 0 else "#FF5050"
+            self.score_label.setStyleSheet(
+                f"font-size: 15pt; font-weight: bold; color: {color};"
+            )
+            self.score_label.setText(
+                f"AI alone: {ai_pct:.1f}%   →   With your help: {hy_pct:.1f}%  ({sign}{delta:.1f}%)\n"
+                f"You have annotated {touched_unc}/{n_unc} uncertain cells"
+            )
+        else:
+            if touched_unc == 0:
+                self.score_label.setStyleSheet("font-size: 15pt; font-weight: bold; color: #BBB;")
+                self.score_label.setText(f"{n_unc} uncertain cells — click them to give your opinion")
+                return
+            agree = int(((df['user'] == df['ai']) & touched & uncertain_mask).sum())
+            self.score_label.setStyleSheet("font-size: 15pt; font-weight: bold; color: #BBB;")
+            self.score_label.setText(
+                f"Annotated {touched_unc}/{n_unc}. "
+                f"You agree with AI on {agree}/{touched_unc} "
+                f"({100*agree/touched_unc:.0f}%)"
+            )
 
     def plot_only_image(self):
 
@@ -631,7 +787,7 @@ class MainWindow(QMainWindow):
         elif self.USER_CLICKED:
             self.drawRectanglesAndText(mode='user')
         elif self.AI_CLICKED:
-            self.drawRectanglesAndText(mode='ai', uncertainty=self.filter_slider.value()/100)
+            self.drawRectanglesAndText(mode='ai')
 
     def plot_comparison(self):
 
@@ -671,9 +827,39 @@ class MainWindow(QMainWindow):
         b = self.user_clicked_dict[comp2]
         n = len(a)
         matches = int((a == b).sum())
-        pct = 100 * matches / n if n else 0.0
         tag = self.SCORE_LABELS.get((comp1, comp2), f"{comp1} vs {comp2}")
-        self.score_label.setText(f"{tag}: {matches}/{n} ({pct:.1f}%)")
+        self._start_score_countup(tag, matches, n)
+
+    SCORE_DEFAULT_STYLE = "font-size: 18pt; font-weight: bold; color: #7CFC00;"
+
+    def _start_score_countup(self, tag, matches, total):
+        self._score_timer.stop()
+        self.score_label.setStyleSheet(self.SCORE_DEFAULT_STYLE)
+        self._score_target = {
+            'tag': tag,
+            'matches': matches,
+            'total': total,
+            'step': 0,
+        }
+        self._score_timer.start()
+        self._score_tick()
+
+    def _score_tick(self):
+        if self._score_target is None:
+            self._score_timer.stop()
+            return
+
+        state = self._score_target
+        state['step'] += 1
+        t = min(1.0, state['step'] / self._score_steps_total)
+        eased = 1 - (1 - t) ** 3  # ease-out cubic
+        shown_matches = int(round(eased * state['matches']))
+        pct = (100 * shown_matches / state['total']) if state['total'] else 0.0
+        self.score_label.setText(f"{state['tag']}: {shown_matches}/{state['total']} ({pct:.1f}%)")
+
+        if t >= 1.0:
+            self._score_timer.stop()
+            self._score_target = None
 
 
     def reset_clicked(self):
@@ -681,16 +867,21 @@ class MainWindow(QMainWindow):
         self.GT_CLICKED = self.USER_CLICKED = self.AI_CLICKED = False
         for widget in [self.gt_results, self.user_results, self.ai_results]:
             widget.setStyleSheet(STYLED[1])
+        self.HELP_CLICKED = False
+        self.help_results.setStyleSheet(HELP_STYLESHEET_OFF)
         self.timer_label.setText("")
         self.score_label.setText("")
+        self.score_label.setStyleSheet(self.SCORE_DEFAULT_STYLE)
         self.ANNOTATED = False
         self.timer_text = ""
 
+        self._ai_reveal_timer.stop()
+        self._ai_animation_active = False
+        self._ai_revealed_count = 0
 
-    def update_filter_value(self, value):
-        """Update label with mapped slider value (0–1)."""
-        self.filter_label.setText(f"Filter: {value}%")
-        # TODO: Apply filter logic to your data here
+        self._score_timer.stop()
+        self._score_target = None
+
 
     def _start_inference(self):
 
@@ -700,13 +891,24 @@ class MainWindow(QMainWindow):
         self._set_inference_ui_enabled(False)
         self._set_timer_suffix("Running AI...")
 
+        total = len(self.curr_patches)
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+
         worker = InferenceWorker(self.model, np.array(self.curr_patches), parent=self)
         worker.finished_ok.connect(self._on_inference_done)
         worker.failed.connect(self._on_inference_failed)
+        worker.progress.connect(self._on_inference_progress)
         worker.finished.connect(worker.deleteLater)
         worker.finished.connect(self._on_worker_finished)
         self._inference_worker = worker
         worker.start()
+
+    def _on_inference_progress(self, done, total):
+        if total != self.progress_bar.maximum():
+            self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(done)
 
     def _on_worker_finished(self):
         self._inference_running = False
@@ -719,10 +921,13 @@ class MainWindow(QMainWindow):
 
     def _on_inference_done(self, results, elapsed):
 
+        self.progress_bar.setVisible(False)
+
         if id(self.user_clicked_dict) != self._inference_patches_id:
             self._set_timer_suffix("AI discarded (image changed)", commit=True)
             self._set_inference_ui_enabled(True)
             self._ai_toggle_pending = False
+            self._help_toggle_pending = False
             return
 
         self.model_timer = elapsed
@@ -734,15 +939,47 @@ class MainWindow(QMainWindow):
         self.MODEL_RAN = True
         self._set_inference_ui_enabled(True)
 
+        self._setup_ai_reveal()
+
         if self._ai_toggle_pending:
             self._ai_toggle_pending = False
             self._try_toggle("AI_CLICKED", self.ai_results)
+        elif self._help_toggle_pending:
+            self._help_toggle_pending = False
+            self._toggle_help()
+
+        if self._ai_animation_active and self.AI_CLICKED:
+            self._ai_reveal_timer.start()
+
+    def _setup_ai_reveal(self):
+        coords = np.stack([np.asarray(c) for c in self.user_clicked_dict['coords'].values])
+        self._ai_revealed_order = np.argsort(coords[:, 0])
+        self._ai_revealed_count = 0
+        self._ai_revealed_total = len(self._ai_revealed_order)
+        self._ai_animation_active = self._ai_revealed_total > 0
+
+    def _ai_reveal_tick(self):
+        if not self._ai_animation_active:
+            self._ai_reveal_timer.stop()
+            return
+
+        step = max(1, self._ai_revealed_total // 40)
+        self._ai_revealed_count = min(self._ai_revealed_total, self._ai_revealed_count + step)
+
+        if self._ai_revealed_count >= self._ai_revealed_total:
+            self._ai_animation_active = False
+            self._ai_reveal_timer.stop()
+
+        if self.AI_CLICKED:
+            self.switch_show()
 
     def _on_inference_failed(self, err):
 
+        self.progress_bar.setVisible(False)
         self._set_timer_suffix(f"AI failed: {err}", commit=True)
         self._set_inference_ui_enabled(True)
         self._ai_toggle_pending = False
+        self._help_toggle_pending = False
 
     def _set_timer_suffix(self, suffix, commit=False):
         """Preview (commit=False) or persist (commit=True) a suffix to the timer label."""
@@ -792,40 +1029,49 @@ class MainWindow(QMainWindow):
         if self.curr_masks is None or self.user_clicked_dict is None:
             return
 
-        self.only_show = True
-        if (self.AI_CLICKED + self.USER_CLICKED + self.GT_CLICKED) == 0 and self.ANNOTATION_MODE:
-            self.only_show = False
-
         if self.curr_masks[pos.y(), pos.x()] == 0:
             return
 
         min_idx = int(np.argmin(cdist(self.curr_coords, np.atleast_2d(np.array([pos.x(), pos.y()])))))
         label = self.user_clicked_dict.index[min_idx]
 
+        in_help = self.HELP_CLICKED and 'uncertainty' in self.user_clicked_dict.columns
+        cell_is_uncertain = (
+            in_help
+            and self.user_clicked_dict.at[label, 'uncertainty'] > HELP_UNCERTAINTY_THRESHOLD
+        )
+
+        self.only_show = True
+        if (self.AI_CLICKED + self.USER_CLICKED + self.GT_CLICKED) == 0 and self.ANNOTATION_MODE:
+            self.only_show = False
+        if cell_is_uncertain:
+            self.only_show = False
+
         if not self.only_show:
             cur = self.user_clicked_dict.at[label, 'user']
             self.user_clicked_dict.at[label, 'user'] = 0 if cur == 3 else cur + 1
+            self.user_clicked_dict.at[label, 'user_touched'] = True
 
         self.tmp = qimage2ndarray.array2qimage(resize_with_scipy(self.user_clicked_dict.at[label, 'patches']*255, 384, 384))
         self.cell_image.setPixmap(QtGui.QPixmap.fromImage(self.tmp))
 
-        if not self.ANNOTATION_MODE:
+        if self.HELP_CLICKED:
+            self.switch_show()
+        elif not self.ANNOTATION_MODE:
             self.switch_show()
         else:
             self.drawRectanglesAndText(mode='user')
     
             
 
-    def drawRectanglesAndText(self, mode, uncertainty=None, comp1=None, comp2=None):
+    def drawRectanglesAndText(self, mode, comp1=None, comp2=None):
 
 
         _user_clicked_dict = self.user_clicked_dict.copy()  # rename to df if it’s really a DataFrame
-        
-        if uncertainty is not None:
-            if self.filter_toggle.isChecked():
-                _user_clicked_dict = _user_clicked_dict[(1-_user_clicked_dict['uncertainty']) > uncertainty]
-            else:
-                _user_clicked_dict = _user_clicked_dict[(1-_user_clicked_dict['uncertainty']) < uncertainty]
+
+        if mode == 'ai' and self._ai_animation_active and self._ai_revealed_order is not None:
+            visible = set(self._ai_revealed_order[:self._ai_revealed_count].tolist())
+            _user_clicked_dict = _user_clicked_dict[_user_clicked_dict.index.isin(visible)]
 
         qimage = qimage2ndarray.array2qimage(self.curr_display)  # Convert np array to QImage
         pixmap = QPixmap.fromImage(qimage)  # Convert QImage to QPixmap
@@ -843,10 +1089,58 @@ class MainWindow(QMainWindow):
             5: {'color': QColor(0, 255, 0), 'class': ''}  
         }
 
+        if mode == 'help':
+
+            if 'uncertainty' not in _user_clicked_dict.columns:
+                painter.end()
+                self.Image.setPixmap(pixmap)
+                return
+
+            _user_clicked_dict = _user_clicked_dict[
+                _user_clicked_dict['uncertainty'] > HELP_UNCERTAINTY_THRESHOLD
+            ]
+
+            help_pen = QPen(QColor(255, 60, 60), 4)
+            help_pen.setStyle(Qt.DashLine)
+
+            for _, row in _user_clicked_dict.iterrows():
+                rectangle = QRect(row.coords[0]-34, row.coords[1]-34, 68, 68)
+                painter.setPen(help_pen)
+                painter.drawRect(rectangle)
+
+                ai_text = f"AI: ?\n{1 - row['uncertainty']:.0%}"
+                painter.setPen(QColor(255, 200, 200))
+                fm = painter.fontMetrics()
+                text_rect = fm.boundingRect(QRect(0, 0, 0, 0), Qt.AlignCenter | Qt.TextWordWrap, ai_text)
+                text_position = QPoint(row.coords[0], row.coords[1]-46)
+                text_rect.moveCenter(text_position)
+                painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, ai_text)
+
+                if bool(row.get('user_touched', False)):
+                    user_class_idx = int(row['user'])
+                    user_color = colors_dict[user_class_idx]['color']
+                    user_name = colors_dict[user_class_idx]['class']
+
+                    inner_pen = QPen(user_color, 3)
+                    painter.setPen(inner_pen)
+                    painter.drawRect(QRect(row.coords[0]-27, row.coords[1]-27, 54, 54))
+
+                    user_text = f"You: {user_name}"
+                    painter.setPen(user_color)
+                    user_rect = fm.boundingRect(QRect(0, 0, 0, 0), Qt.AlignCenter | Qt.TextWordWrap, user_text)
+                    user_pos = QPoint(row.coords[0], row.coords[1]+46)
+                    user_rect.moveCenter(user_pos)
+                    painter.drawText(user_rect, Qt.AlignCenter | Qt.TextWordWrap, user_text)
+
+            painter.end()
+            self.Image.setPixmap(pixmap)
+            self._update_help_score()
+            return
+
         if mode=='ground_truth' and not self.GT_AVAILABLE:
             painter.end()
             self.Image.setPixmap(pixmap)
-            return 
+            return
 
         elif mode == 'comparison':
 
@@ -898,13 +1192,18 @@ class MainWindow(QMainWindow):
                     class_text = colors_dict[row.ground_truth]['class']
 
                 rectangle = QRect(row.coords[0]-32, row.coords[1]-32, 64, 64)
-                painter.setPen(QPen(color, 2))
+                if mode == 'ai':
+                    confidence = float(1 - row['uncertainty'])
+                    pen_width = max(1, int(round(1 + 4 * confidence)))
+                else:
+                    pen_width = 2
+                painter.setPen(QPen(color, pen_width))
                 painter.drawRect(rectangle)
 
                 if mode == 'user' or mode == 'ground_truth':
                     text = class_text
                     spacer = 0
-                else: 
+                else:
                     text = f'{1 - row["uncertainty"]:.0%}\n{class_text}'
                     spacer = - 4
 
