@@ -17,7 +17,7 @@ from scipy.spatial.distance import cdist
 from cellpose import models, io
 #from einops import rearrange
 from PyQt5 import QtGui, QtWidgets
-from PyQt5.QtCore import Qt, QRect, pyqtSignal, QPoint, QPointF
+from PyQt5.QtCore import Qt, QRect, pyqtSignal, QPoint, QPointF, QThread
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QImage
 from PyQt5.QtWidgets import QApplication, QMainWindow, QSlider, QCheckBox, QComboBox, QSpacerItem, QSizePolicy, QWidget, QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QTableWidget, QTableWidgetItem
 from PyQt5.uic import loadUi  # Import to load .ui files
@@ -58,6 +58,15 @@ STYLESHEET_NOT_CLICKED = """QPushButton {
 MAX_ON = 2
 STYLED = (STYLESHEET_CLICKED, STYLESHEET_NOT_CLICKED)
 
+
+def pick_device():
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
+
+
 register_all_modules()
 
 from CellPatchExtraction.src.extraction import segment_image, extract_and_pad_objects
@@ -95,6 +104,27 @@ def resize_with_scipy(image, target_height, target_width):
     scale = scale if image.ndim == 2 else scale + (1,)
     return zoom(image, scale, order=0)
 
+class InferenceWorker(QThread):
+
+    finished_ok = pyqtSignal(dict, float)
+    failed = pyqtSignal(str)
+
+    def __init__(self, model, patches, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.patches = patches
+
+    def run(self):
+        try:
+            t0 = time()
+            tensor = torch.tensor(self.patches.astype(np.float32).transpose(0, 3, 1, 2))
+            with torch.no_grad():
+                results = self.model.predict([tensor], return_uncertainty=True)
+            self.finished_ok.emit(results, time() - t0)
+        except Exception as e:
+            self.failed.emit(repr(e))
+
+
 class ClickableLabel(QLabel):
     
     imageClicked = pyqtSignal(QPoint)  # Signal to emit the local position within the pixmap
@@ -130,23 +160,33 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super(MainWindow, self).__init__()
 
+        self.device = pick_device()
+
         self.setup_layout()
         self.connect_signals()
         self.cellpose_model = self.get_cellpose_model()
 
-        print(self.cellpose_model)
-        
         self.load_h5(H5_PATH)
         self.model = self.get_model()
 
         self.ANNOTATION_MODE = False
         self.MODEL_RAN = False
+        self.ANNOTATED = False
+        self.GT_AVAILABLE = False
 
         self.curr_display = None
+        self.curr_masks = None
+        self.curr_patches = None
+        self.user_clicked_dict = None
 
         self.GT_CLICKED = False
         self.AI_CLICKED = False
         self.USER_CLICKED = False
+
+        self._inference_worker = None
+        self._inference_running = False
+        self._ai_toggle_pending = False
+        self._inference_patches_id = None
         
         self.setStyleSheet("""
             QWidget {
@@ -173,33 +213,23 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    @staticmethod
-    def get_cellpose_model():
+    def get_cellpose_model(self):
 
         model = models.CellposeModel(
-            gpu=False, device=torch.device('mps'),
+            gpu=False, device=self.device,
             pretrained_model=CELLPOSE_MODEL_PATH
         )
-
-        if torch.backends.mps.is_available():
-            model.device = torch.device('mps')
-            model.net = model.net.to(device='mps')
-
-        elif torch.cuda.is_available():
-            model.device = torch.device('cuda')
-            model.net = model.net.to(device='cuda')
-    
+        model.device = self.device
+        model.net = model.net.to(device=self.device)
         return model
-    
+
     def get_model(self):
 
         cfg = Config.fromfile(CONFIG_PATH).to_dict()
         model = build_model_from_cfg(cfg['model'], MODELS)
         checkpoint = torch.load(MODEL_PATH, map_location='cpu')
         model.load_state_dict(checkpoint['state_dict'])
-        model = model.eval().to('mps')
-
-        return model
+        return model.eval().to(self.device)
     
         
     def load_h5(self, path):
@@ -316,8 +346,13 @@ class MainWindow(QMainWindow):
         self.timer_label.setAlignment(Qt.AlignCenter)
         self.timer_label.setStyleSheet("font-size: 14pt;")
 
+        self.score_label = QLabel("", self)
+        self.score_label.setAlignment(Qt.AlignCenter)
+        self.score_label.setStyleSheet("font-size: 18pt; font-weight: bold; color: #7CFC00;")
+
         slider_layout.addItem(QSpacerItem(0, 20))
         slider_layout.addWidget(self.timer_label)
+        slider_layout.addWidget(self.score_label)
 
         cell_image = QVBoxLayout(self.rightContainer)
         self.cell_image = ClickableLabel(self.rightContainer)
@@ -325,6 +360,7 @@ class MainWindow(QMainWindow):
         self.cell_image.setAlignment(Qt.AlignCenter)
         cell_image.addWidget(self.cell_image)
 
+        rightVerticalLayout.addLayout(self._build_legend())
         rightVerticalLayout.addLayout(cell_image)
         rightVerticalLayout.addLayout(self.synthetic_image)
         rightVerticalLayout.addLayout(self.real_image)
@@ -403,6 +439,39 @@ class MainWindow(QMainWindow):
         
         self.curr_masks = resize_with_scipy(self.curr_masks, new_W, new_H)
  
+    LEGEND_ENTRIES = [
+        ((64, 64, 64), "NORMAL"),
+        ((255, 255, 0), "LOSS"),
+        ((0, 255, 255), "GAIN"),
+        ((255, 0, 255), "AMP"),
+    ]
+
+    def _build_legend(self):
+        layout = QHBoxLayout()
+        layout.setSpacing(18)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addStretch()
+
+        for (r, g, b), name in self.LEGEND_ENTRIES:
+            entry = QHBoxLayout()
+            entry.setSpacing(8)
+
+            swatch = QLabel()
+            swatch.setFixedSize(28, 28)
+            swatch.setStyleSheet(
+                f"border: 3px solid rgb({r},{g},{b}); background-color: black;"
+            )
+
+            text = QLabel(name)
+            text.setStyleSheet("font-size: 13pt; font-weight: bold; color: white;")
+
+            entry.addWidget(swatch)
+            entry.addWidget(text)
+            layout.addLayout(entry)
+            layout.addStretch()
+
+        return layout
+
     def make_black_image(self):
         """ Generates a NumPy image and displays it in ClickableLabel """
     
@@ -516,8 +585,14 @@ class MainWindow(QMainWindow):
 
     def ai_clicked(self):
 
+        if self._inference_running:
+            return
+
         if not self.MODEL_RAN:
-            self.run_model()
+            if self.curr_patches is None or len(self.curr_patches) == 0:
+                return
+            self._start_inference()
+            return
 
         self._try_toggle("AI_CLICKED", self.ai_results)
 
@@ -528,6 +603,9 @@ class MainWindow(QMainWindow):
 
         n_toggled = (self.GT_CLICKED + self.AI_CLICKED + self.USER_CLICKED)
 
+        if n_toggled != 2:
+            self.score_label.setText("")
+
         if n_toggled == 0:
             self.plot_only_image()
 
@@ -536,7 +614,7 @@ class MainWindow(QMainWindow):
 
         elif n_toggled == 2:
             self.plot_comparison()
-        else: 
+        else:
             print('SHOULD NEVER HAPPEN')
 
     def plot_only_image(self):
@@ -559,12 +637,43 @@ class MainWindow(QMainWindow):
 
         if self.GT_CLICKED and self.USER_CLICKED:
             self.drawRectanglesAndText(mode='comparison', comp1='ground_truth', comp2='user')
+            self._update_score('ground_truth', 'user')
 
         if self.GT_CLICKED and self.AI_CLICKED:
             self.drawRectanglesAndText(mode='comparison', comp1='ground_truth', comp2='ai')
+            self._update_score('ground_truth', 'ai')
 
         if self.AI_CLICKED and self.USER_CLICKED:
             self.drawRectanglesAndText(mode='comparison', comp1='ai', comp2='user')
+            self._update_score('ai', 'user')
+
+    SCORE_LABELS = {
+        ('ground_truth', 'user'): "You",
+        ('ground_truth', 'ai'): "AI",
+        ('ai', 'user'): "You vs AI",
+    }
+
+    def _update_score(self, comp1, comp2):
+
+        if self.user_clicked_dict is None:
+            self.score_label.setText("")
+            return
+
+        if 'ground_truth' in (comp1, comp2) and not self.GT_AVAILABLE:
+            self.score_label.setText("GT not available for real images")
+            return
+
+        if comp1 not in self.user_clicked_dict.columns or comp2 not in self.user_clicked_dict.columns:
+            self.score_label.setText("")
+            return
+
+        a = self.user_clicked_dict[comp1]
+        b = self.user_clicked_dict[comp2]
+        n = len(a)
+        matches = int((a == b).sum())
+        pct = 100 * matches / n if n else 0.0
+        tag = self.SCORE_LABELS.get((comp1, comp2), f"{comp1} vs {comp2}")
+        self.score_label.setText(f"{tag}: {matches}/{n} ({pct:.1f}%)")
 
 
     def reset_clicked(self):
@@ -573,6 +682,7 @@ class MainWindow(QMainWindow):
         for widget in [self.gt_results, self.user_results, self.ai_results]:
             widget.setStyleSheet(STYLED[1])
         self.timer_label.setText("")
+        self.score_label.setText("")
         self.ANNOTATED = False
         self.timer_text = ""
 
@@ -582,28 +692,72 @@ class MainWindow(QMainWindow):
         self.filter_label.setText(f"Filter: {value}%")
         # TODO: Apply filter logic to your data here
 
-    def run_model(self):
+    def _start_inference(self):
 
-        self.model_timer = time()
+        self._inference_running = True
+        self._ai_toggle_pending = True
+        self._inference_patches_id = id(self.user_clicked_dict)
+        self._set_inference_ui_enabled(False)
+        self._set_timer_suffix("Running AI...")
 
-        results = self.model.predict([torch.tensor(np.array(self.curr_patches).astype(np.float32).transpose(0,3,1,2))], return_uncertainty=True)
+        worker = InferenceWorker(self.model, np.array(self.curr_patches), parent=self)
+        worker.finished_ok.connect(self._on_inference_done)
+        worker.failed.connect(self._on_inference_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_worker_finished)
+        self._inference_worker = worker
+        worker.start()
 
-        self.model_timer = time() - self.model_timer
+    def _on_worker_finished(self):
+        self._inference_running = False
+        self._inference_worker = None
 
+    def _set_inference_ui_enabled(self, enabled):
+        self.ai_results.setEnabled(enabled)
+        self.synthetic_image_button.setEnabled(enabled)
+        self.real_image_button.setEnabled(enabled)
+
+    def _on_inference_done(self, results, elapsed):
+
+        if id(self.user_clicked_dict) != self._inference_patches_id:
+            self._set_timer_suffix("AI discarded (image changed)", commit=True)
+            self._set_inference_ui_enabled(True)
+            self._ai_toggle_pending = False
+            return
+
+        self.model_timer = elapsed
         self.user_clicked_dict['ai'] = [CLASS_MAP[c] for c in results['classification']]
         self.user_clicked_dict['regression'] = results['regression']
         self.user_clicked_dict['uncertainty'] = results['uncertainty']
 
-        model_text = f"Model took {self.model_timer:.2f}s"
-
-        if self.timer_text:
-            self.timer_text += " / " + model_text
-        else: 
-            self.timer_text += model_text
-
-        self.timer_label.setText(self.timer_text)
-
+        self._set_timer_suffix(f"Model took {elapsed:.2f}s", commit=True)
         self.MODEL_RAN = True
+        self._set_inference_ui_enabled(True)
+
+        if self._ai_toggle_pending:
+            self._ai_toggle_pending = False
+            self._try_toggle("AI_CLICKED", self.ai_results)
+
+    def _on_inference_failed(self, err):
+
+        self._set_timer_suffix(f"AI failed: {err}", commit=True)
+        self._set_inference_ui_enabled(True)
+        self._ai_toggle_pending = False
+
+    def _set_timer_suffix(self, suffix, commit=False):
+        """Preview (commit=False) or persist (commit=True) a suffix to the timer label."""
+        base = self.timer_text
+        text = (base + " / " + suffix) if base else suffix
+        if commit:
+            self.timer_text = text
+        self.timer_label.setText(text)
+
+    def closeEvent(self, event):
+        w = self._inference_worker
+        if self._inference_running and w is not None:
+            w.quit()
+            w.wait(2000)
+        super().closeEvent(event)
 
 
     def start_timer(self):
@@ -635,24 +789,26 @@ class MainWindow(QMainWindow):
   
     def image_clicked(self, pos):
 
+        if self.curr_masks is None or self.user_clicked_dict is None:
+            return
+
         self.only_show = True
         if (self.AI_CLICKED + self.USER_CLICKED + self.GT_CLICKED) == 0 and self.ANNOTATION_MODE:
             self.only_show = False
-        
+
         if self.curr_masks[pos.y(), pos.x()] == 0:
             return
-    
-        min_idx = np.argmin(cdist(self.curr_coords, np.atleast_2d(np.array([pos.x(), pos.y()]))))
+
+        min_idx = int(np.argmin(cdist(self.curr_coords, np.atleast_2d(np.array([pos.x(), pos.y()])))))
+        label = self.user_clicked_dict.index[min_idx]
 
         if not self.only_show:
-            if self.user_clicked_dict['user'].iloc[min_idx] == 3:
-                self.user_clicked_dict['user'].iloc[min_idx] = 0
-            else:
-                self.user_clicked_dict['user'].iloc[min_idx] += 1
+            cur = self.user_clicked_dict.at[label, 'user']
+            self.user_clicked_dict.at[label, 'user'] = 0 if cur == 3 else cur + 1
 
-        self.tmp = qimage2ndarray.array2qimage(resize_with_scipy(self.user_clicked_dict['patches'].iloc[min_idx]*255, 384, 384))
+        self.tmp = qimage2ndarray.array2qimage(resize_with_scipy(self.user_clicked_dict.at[label, 'patches']*255, 384, 384))
         self.cell_image.setPixmap(QtGui.QPixmap.fromImage(self.tmp))
-        
+
         if not self.ANNOTATION_MODE:
             self.switch_show()
         else:
