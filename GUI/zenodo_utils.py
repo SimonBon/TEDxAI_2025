@@ -1,8 +1,8 @@
 import requests
 from tqdm import tqdm
 import argparse
+import shutil
 from pathlib import Path
-import os
 
 def download_zenodo_file(record_id, filename, destination, access_token=None):
     """
@@ -59,47 +59,54 @@ def unzip_file(zip_path, extract_to):
     print(f"Extracted '{zip_path}' to '{extract_to}'")
     
 
-def add_to_pythonpath():
-    shell_rc_file = Path.home() / (".zshrc" if os.environ.get("SHELL", "").endswith("zsh") else ".bashrc")
-    line_to_add = 'export PYTHONPATH="$PYTHONPATH:$HOME/src"'
+EXPECTED_ARTIFACTS = ['model_new.pth', 'small_data.h5', 'CP_TU_MORE']
 
-    # Check if the line already exists
-    if not shell_rc_file.exists() or line_to_add not in shell_rc_file.read_text():
-        with open(shell_rc_file, "a") as rc_file:
-            rc_file.write(f"\n{line_to_add}\n")
-        print(f"✅ Added {line_to_add} to {shell_rc_file}")
 
-    # Source the updated file
-    os.system(f"source {shell_rc_file}")
-    print(f"✅ Sourced {shell_rc_file}")
+def flatten_into(out_path):
+    """The Zenodo archive extracts to out_path/data/*. Move those into out_path/ directly."""
+    data_dir = out_path / 'data'
+    if not data_dir.is_dir():
+        return
 
-    
+    for item in data_dir.iterdir():
+        if item.name.startswith('.'):
+            continue
+        target = out_path / item.name
+        if target.exists():
+            continue
+        shutil.move(str(item), str(target))
+
+    shutil.rmtree(data_dir, ignore_errors=True)
+    shutil.rmtree(out_path / '__MACOSX', ignore_errors=True)
+
+
+def report_missing(out_path):
+    missing = [name for name in EXPECTED_ARTIFACTS if not (out_path / name).exists()]
+    if missing:
+        print(f"\n⚠️  Expected files missing after extraction: {missing}")
+    if not (out_path / 'real_images').is_dir():
+        print("⚠️  'real_images/' is not in the Zenodo bundle — the 'Load Image' combo box will be empty until TIFFs are placed there manually.")
+
+
 if __name__ == '__main__':
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '-o','--out_path', type=str)
-    
+
     args = parser.parse_args()
-    
+
     out_path = Path(args.out_path).resolve()
-    
-    record_id = "15040813"  # Replace with your Zenodo record ID
-    filename = 'data.zip'  # Replace with the exact filename you wish to download
-    
-    destination = out_path / filename  # Replace with your desired save path
+
+    record_id = "15040813"  # Zenodo record ID
+    filename = 'data.zip'
+
+    destination = out_path / filename
     download_zenodo_file(record_id, filename, destination)
-    
+
     unzip_file(destination, out_path)
-    
-    print(out_path.joinpath('data/config/last_checkpoint'))
-    print(f'{out_path}/data/config/checkpoint.pth')
-    
-    with open(out_path.joinpath('data/config/last_checkpoint'), "w") as file:
-        file.write(f'{out_path}/data/config/checkpoint.pth')
-        
-    add_to_pythonpath()
-    
-        
-    
+    flatten_into(out_path)
+    destination.unlink(missing_ok=True)
+    report_missing(out_path)
+
     

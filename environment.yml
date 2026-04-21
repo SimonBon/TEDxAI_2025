@@ -9,7 +9,7 @@ dependencies:
   - pip:
       - numpy==1.26.4
       - torch==2.0.1
-      - torchvision==0.10.0
+      - torchvision==0.15.2
       - mmcv==2.0.1
       - mmengine==0.10.4
       - mmselfsup==1.0.0
@@ -20,6 +20,7 @@ dependencies:
       - screeninfo
       - requests
       - BioUtensils==0.12
+      - CellPatchExtraction==1.24
       - cellplot==1.12
       - cellpose==2.2.3
       - einops==0.8.1
