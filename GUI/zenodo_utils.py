@@ -4,46 +4,47 @@ import argparse
 import shutil
 from pathlib import Path
 
-def download_zenodo_file(record_id, filename, destination, access_token=None):
-    """
-    Downloads a specific file from a Zenodo record with a progress bar.
-
-    Parameters:
-    - record_id (str): The Zenodo record ID.
-    - filename (str): The exact name of the file to download.
-    - destination (str): The local path where the file will be saved.
-    - access_token (str, optional): Your Zenodo access token for restricted records.
-
-    Returns:
-    - None
-    """
-    base_url = f"https://zenodo.org/api/records/{record_id}"
+def resolve_latest_archive(record_id, access_token=None):
+    """Return (latest_version_id, single_archive_file_entry) for a Zenodo concept record."""
     headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
 
-    # Fetch the record metadata
-    response = requests.get(base_url, headers=headers)
-    response.raise_for_status()
-    record = response.json()
+    r = requests.get(
+        f"https://zenodo.org/api/records/{record_id}/versions",
+        headers=headers,
+    )
+    r.raise_for_status()
+    hits = r.json().get("hits", {}).get("hits", [])
+    published = [h for h in hits if h.get("status") == "published" and h.get("files")]
+    if not published:
+        raise RuntimeError(f"No published versions with files found under record {record_id}")
 
-    # Find the file in the record's files
-    file_info = next((f for f in record["files"] if f["key"] == filename), None)
-    if not file_info:
-        raise FileNotFoundError(f"File '{filename}' not found in record '{record_id}'.")
+    latest = max(published, key=lambda h: h.get("created", ""))
+    files = latest["files"]
+    if len(files) != 1:
+        names = [f["key"] for f in files]
+        raise RuntimeError(
+            f"Expected a single archive file in latest version, found {len(files)}: {names}"
+        )
+    return latest["id"], files[0]
 
-    # Download the file with a progress bar
-    download_url = file_info["links"]["self"]
-    with requests.get(download_url, headers=headers, stream=True) as r:
+
+def download_to(file_entry, destination, access_token=None):
+    """Download a Zenodo file entry to a local path with a progress bar."""
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+    name = file_entry["key"]
+    url = file_entry["links"]["self"]
+
+    with requests.get(url, headers=headers, stream=True) as r:
         r.raise_for_status()
-        total_size = int(r.headers.get('content-length', 0))
-        chunk_size = 1024 * 1024
+        total = int(r.headers.get("content-length", 0))
         with open(destination, "wb") as f, tqdm(
-            total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=filename
-        ) as progress_bar:
-            for chunk in r.iter_content(chunk_size=chunk_size):
+            total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=name
+        ) as bar:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
                 f.write(chunk)
-                progress_bar.update(len(chunk))
+                bar.update(len(chunk))
 
-    print(f"\nFile '{filename}' has been downloaded to '{destination}'.")
+    print(f"\nFile '{name}' has been downloaded to '{destination}'.")
     
 import zipfile
 
@@ -91,22 +92,19 @@ def report_missing(out_path):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-o','--out_path', type=str)
-
+    parser.add_argument('-o', '--out_path', type=str, required=True)
     args = parser.parse_args()
 
     out_path = Path(args.out_path).resolve()
+    record_id = "15040813"  # any version id in the concept — we follow to latest
 
-    record_id = "15040813"  # Zenodo record ID
-    filename = 'data.zip'
+    version_id, file_entry = resolve_latest_archive(record_id)
+    print(f"Latest Zenodo version: {version_id}  (file: {file_entry['key']})")
 
-    destination = out_path / filename
-    download_zenodo_file(record_id, filename, destination)
+    destination = out_path / file_entry['key']
+    download_to(file_entry, destination)
 
     unzip_file(destination, out_path)
     flatten_into(out_path)
     destination.unlink(missing_ok=True)
     report_missing(out_path)
-
-    
