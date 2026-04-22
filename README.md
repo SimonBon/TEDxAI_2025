@@ -12,29 +12,26 @@ It features an **interactive game** that simulates the process of detecting **ge
 
 ## 🛠 Installation
 
-1. **Clone this repository:**
-   ```bash
-   git clone https://github.com/SimonBon/TEDxAI_2025
-   cd TEDxAI_2025
-   ```
+**Prerequisite:** [Conda](https://www.anaconda.com/download) (Miniconda or Anaconda).
 
-2. **Create the Conda environment and activate it:**
-   If you do not have conda installed, please refer to the [Anaconda](https://www.anaconda.com/download) webpage to install it.
-   ```bash
-   conda env create -f environment.yml
-   conda activate TEDxAI
-   ```
+Copy-paste the block below into a terminal:
 
-3. **Download the model, Cellpose weights, synthetic-cell bank, and example TIFFs from Zenodo:**
-   ```bash
-   python GUI/zenodo_utils.py -o .
-   ```
-   This populates the repository root with `model_new.pth`, `config_new.py`, `small_data.h5`, `CP_TU_MORE/`, and `real_images/`.
+```bash
+git clone https://github.com/SimonBon/TEDxAI_2025
+cd TEDxAI_2025
+conda env create -f environment.yml
+conda activate TEDxAI
+python GUI/zenodo_utils.py -o .
+python GUI/app.py
+```
 
-4. **Start the application:**
-   ```bash
-   python GUI/app.py
-   ```
+What each step does:
+
+1. **Clone** this repository.
+2. **Create the Conda environment** from `environment.yml` (installs PyTorch, Cellpose, MMSelfSup, `CellPatchExtraction`, PyQt5, and the rest).
+3. **Activate** the `TEDxAI` environment.
+4. **Download the data bundle from Zenodo** — the latest published version of [record 15040813](https://zenodo.org/records/15040813) is auto-resolved; the archive is unpacked into the repo root and yields `model_new.pth`, `small_data.h5`, `CP_TU_MORE`, and `real_images/`.
+5. **Run the app.**
 
 🎉 **You're all set! Enjoy the game!**
 
